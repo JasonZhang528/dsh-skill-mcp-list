@@ -1,0 +1,11 @@
+# dsh-skill-mcp-list bundle patch
+#
+# 本文件是 npm 包的 `dsh.bundle.patch` 层：通过官方 CLI 安装时——
+#
+#   dsh plugin --profile <name> add dsh-skill-mcp-list
+#
+# 命令会把本包并入 profile 的 `dsh.profile.bundles` 层栈，profile 启动时合并
+# 本补丁（一条 insert），无需手工编辑 profile 文件。
+- insert:
+    - id: skill-mcp-list
+      name: dsh-skill-mcp-list

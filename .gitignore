@@ -1,0 +1,13 @@
+# 测试用运行时依赖（由 scripts/fetch-runtime.mjs 从本机 DSH 提取，不入库）
+.runtime/
+node_modules/
+
+# 临时产物
+.tmp-*
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
