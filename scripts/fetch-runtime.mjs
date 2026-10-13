@@ -19,13 +19,31 @@ const PROJECT = resolve(HERE, '..');
 /** 默认的 asar 路径：随 DSH 桌面版安装。 */
 const DEFAULT_ASAR = 'D:\\Program Files\\DeepSeek Harness\\resources\\app.asar';
 
-/** 需要提取的入口包；其余依赖按 package.json 的 dependencies 递归补齐。 */
+/** 需要提取的入口包；其余依赖按 package.json 的依赖字段递归补齐。 */
 const ENTRIES = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-tools',
   '@deepseek-ai/dsh-sandbox',
   '@deepseek-ai/dsh-skill',
 ];
+
+/**
+ * 从 manifest 中收集需要一并提取的 @deepseek-ai 依赖名。
+ *
+ * DSH 的包把真实运行时依赖声明在 peerDependencies 上（由宿主提供），
+ * dependencies 里只放少量直接依赖。两者都必须遍历，否则闭包不完整、
+ * 测试会在 import 阶段报 ERR_MODULE_NOT_FOUND。
+ * @param {object} manifest 已解析的 package.json
+ * @returns {string[]} 依赖包名
+ */
+function collectDeepseekDeps(manifest) {
+  const names = [
+    ...Object.keys(manifest.dependencies || {}),
+    ...Object.keys(manifest.peerDependencies || {}),
+    ...Object.keys(manifest.optionalDependencies || {}),
+  ];
+  return [...new Set(names.filter((name) => name.startsWith('@deepseek-ai/')))];
+}
 
 /** asar 内 DSH 包所在的目录前缀。 */
 const ROOT = 'dsh/node_modules';
@@ -151,9 +169,7 @@ try {
     if (manifestText === null) continue;
     let manifest;
     try { manifest = JSON.parse(manifestText); } catch { continue; }
-    for (const dep of Object.keys(manifest.dependencies || {})) {
-      if (dep.startsWith('@deepseek-ai/')) queue.push(dep);
-    }
+    for (const dep of collectDeepseekDeps(manifest)) queue.push(dep);
   }
 
   console.log('[fetch-runtime] 提取 ' + extracted + ' 个包，共处理 ' + seen.size + ' 个，输出到 ' + out);
