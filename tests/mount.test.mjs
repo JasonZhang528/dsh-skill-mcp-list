@@ -80,8 +80,22 @@ suite('插件在真实 Cordis 上加载并注册工具', async () => {
     assert.deepEqual(tool.parameters.required, ['action']);
     assert.deepEqual(
       tool.parameters.properties.action.enum,
-      ['list', 'summary', 'detail', 'enable_skill', 'disable_skill', 'enable_mcp', 'disable_mcp'],
+      [
+        'list',
+        'summary',
+        'detail',
+        'enable_skill',
+        'disable_skill',
+        'enable_mcp',
+        'disable_mcp',
+        'install_skill',
+        'configure_mcp',
+      ],
     );
+    // object 参数必须显式声明 additionalProperties，否则官方 schema 编译器拒绝。
+    assert.equal(tool.parameters.properties.spec.additionalProperties, true);
+    assert.equal(tool.parameters.properties.config.additionalProperties, true);
+    assert.deepEqual(tool.parameters.required, ['action']);
     assert.ok(app.ctx.get('skillMcpList'), '必须提供 skillMcpList 服务');
   } finally {
     await app.fiber.dispose();
@@ -236,6 +250,135 @@ suite('权限不足时写操作被拒绝（不绕过沙箱）', async () => {
       '缺少审批通道时必须拒绝，而不是静默写入',
     );
     assert.equal(await readFile(file, 'utf8'), original, '被拒绝时文件不得改动');
+  } finally {
+    await app.fiber.dispose();
+  }
+});
+
+// ---------------------------------------------------------------- 安装 Skill
+suite('install_skill 真实 Cordis 上落盘并注册', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-sml-mount-home-'));
+  const saved = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  let app;
+  try {
+    app = await mount({ sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) } });
+    app.skills.registerProvider(() => ({
+      name: 'filesystem',
+      async list() { return []; },
+      async get() { return undefined; },
+    }));
+    const tool = app.tools.get('skill_mcp_list');
+    const exec = { signal: new AbortController().signal, callId: 'inst1' };
+
+    const out = await tool.execute(
+      { action: 'install_skill', spec: { name: 'mounted-skill', description: 'Mounted.', body: '# M' } },
+      exec,
+    );
+    const result = JSON.parse(out);
+    assert.equal(result.target, 'mounted-skill');
+    assert.equal(result.action, 'install');
+    assert.equal(result.path, join(home, 'skills', 'mounted-skill', 'SKILL.md'));
+    assert.match(await readFile(result.path, 'utf8'), /^name: mounted-skill$/m);
+
+    // 重复安装必须被拒。
+    await assert.rejects(
+      () => tool.execute({ action: 'install_skill', spec: { name: 'mounted-skill', description: 'X' } }, exec),
+      /已存在/,
+    );
+
+    // 非法名必须被拒。
+    await assert.rejects(
+      () => tool.execute({ action: 'install_skill', spec: { name: 'BAD', description: 'X' } }, exec),
+      /kebab-case/,
+    );
+  } finally {
+    if (saved === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = saved;
+    if (app !== undefined) await app.fiber.dispose();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+suite('install_skill 缺 spec 时报可读错误', async () => {
+  const app = await mount({ sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) } });
+  try {
+    const tool = app.tools.get('skill_mcp_list');
+    const exec = { signal: new AbortController().signal, callId: 'inst2' };
+    await assert.rejects(
+      () => tool.execute({ action: 'install_skill', spec: { name: 'ok-name', description: '' } }, exec),
+      /描述不能为空/,
+    );
+  } finally {
+    await app.fiber.dispose();
+  }
+});
+
+// ---------------------------------------------------------------- 配置 MCP
+suite('configure_mcp 走 configEditor 并返回规范化补丁', async () => {
+  const edits = [];
+  const app = await mount({
+    entries: [{ id: 'mcp-a', options: { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'a', transport: 'stdio', command: 'node' } }, disabled: false }],
+    sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) },
+  });
+  app.ctx.provide('configEditor', {
+    async edit(entry, change) { edits.push({ id: entry.id, next: change(entry.options.config ?? {}, {}) }); },
+  });
+  try {
+    const tool = app.tools.get('skill_mcp_list');
+    const exec = { signal: new AbortController().signal, callId: 'cfg1' };
+
+    const out = await tool.execute(
+      { action: 'configure_mcp', target: 'mcp-a', config: { toolCallTimeoutMs: 120000, failOnStartupError: true } },
+      exec,
+    );
+    const result = JSON.parse(out);
+    assert.equal(result.action, 'configure');
+    assert.equal(result.serverName, 'a');
+    assert.deepEqual(result.changed, { toolCallTimeoutMs: 120000, failOnStartupError: true });
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].next.command, 'node', '既有字段不得丢失');
+    assert.equal(edits[0].next.toolCallTimeoutMs, 120000);
+
+    // 非法补丁必须被拒且不触发写盘。
+    await assert.rejects(
+      () => tool.execute({ action: 'configure_mcp', target: 'mcp-a', config: { env: { X: 'y' } } }, exec),
+      /不可通过此界面修改/,
+    );
+    assert.equal(edits.length, 1, '非法补丁不得触发 configEditor');
+  } finally {
+    await app.fiber.dispose();
+  }
+});
+
+suite('configure_mcp 缺 configEditor 时拒绝', async () => {
+  // 先放行权限升级，才能验证到 configEditor 缺失这一层。
+  const app = await mount({
+    entries: [{ id: 'mcp-a', options: { name: '@deepseek-ai/dsh-mcp-client', config: { serverName: 'a', transport: 'stdio', command: 'node' } } }],
+    sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) },
+  });
+  try {
+    const tool = app.tools.get('skill_mcp_list');
+    await assert.rejects(
+      () => tool.execute({ action: 'configure_mcp', target: 'mcp-a', config: { toolCallTimeoutMs: 1 } }, { signal: new AbortController().signal, callId: 'cfg2' }),
+      /configEditor 服务不可用/,
+    );
+  } finally {
+    await app.fiber.dispose();
+  }
+});
+
+suite('install_skill / configure_mcp 需要权限升级', async () => {
+  const app = await mount({ sandboxPolicy: { resolve: () => ({ mode: 'read-only' }) } });
+  try {
+    const tool = app.tools.get('skill_mcp_list');
+    const exec = { signal: new AbortController().signal, callId: 'cfg3' };
+    for (const args of [
+      { action: 'install_skill', spec: { name: 'x', description: 'y' } },
+      { action: 'configure_mcp', target: 'mcp-a', config: { toolCallTimeoutMs: 1 } },
+    ]) {
+      await assert.rejects(() => tool.execute(args, exec), /approval/i);
+    }
   } finally {
     await app.fiber.dispose();
   }

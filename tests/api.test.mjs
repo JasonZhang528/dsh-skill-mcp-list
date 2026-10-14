@@ -283,7 +283,13 @@ test('snapshot 汇总结构完整', async () => {
   assert.equal(snap.summary.skills.total, 1);
   assert.equal(snap.summary.mcp.total, 1);
   assert.equal(snap.summary.mcp.tools, 1);
-  assert.deepEqual(snap.capabilities, { skillToggle: true, mcpToggle: true, detail: true });
+  assert.deepEqual(snap.capabilities, {
+    skillToggle: true,
+    skillInstall: true,
+    mcpToggle: true,
+    mcpConfigure: false,
+    detail: true,
+  });
   assert.equal(typeof snap.generatedAt, 'number');
 });
 

@@ -2,7 +2,7 @@
 
 > 在 DSH 里一眼看清所有 Skill 与 MCP，并直接开关它们。
 
-**dsh-skill-mcp-list** 是 [DeepSeek Harness](https://github.com/deepseek-ai) 的插件：把当前 DSH 已安装的 **Skill** 与 **MCP 服务器**汇总成一份可读、可搜、可操作的清单，支持查看详细信息与一键启用 / 禁用。
+**dsh-skill-mcp-list** 是 [DeepSeek Harness](https://github.com/deepseek-ai) 的插件：把当前 DSH 已安装的 **Skill** 与 **MCP 服务器**汇总成一份可读、可搜、可操作的卡片清单，支持查看详细信息、一键启用 / 禁用、安装新 Skill 与配置已装 MCP。
 
 如果这个插件帮你省下了翻配置文件的时间，**欢迎点一个 Star ⭐** —— 这是对作者最直接的鼓励，也能让更多 DSH 用户发现它。
 
@@ -31,6 +31,8 @@
 | **汇总查询** | 一次拿到全部 Skill（来自项目 / 用户 / bundled / runtime 全部提供方）与全部 MCP 服务器 |
 | **详细信息** | Skill：名称、描述、来源、提供方、指令文件路径、资源目录、调用面、指令正文<br>MCP：服务器名、传输方式、命令 / 参数 / URL、超时、重连策略、已注册工具清单、Fiber 阶段 |
 | **启用 / 禁用** | Skill 与 MCP 均可开关，状态**持久化**，重启后依然生效 |
+| **安装 Skill** | 弹窗表单创建新 Skill（名称 / 描述 / whenToUse / 指令正文），落盘到用户 skill 根即被自动发现 |
+| **配置 MCP** | 弹窗编辑已安装 MCP 条目：serverName、传输参数（命令 / 参数 / 工作目录 或 URL）、超时、指令上限、启动失败行为、自动重连 |
 | **双入口** | Web 侧边栏图形面板 + 模型工具 `skill_mcp_list`，两条通道能力对等 |
 | **凭据脱敏** | MCP 配置中的 `env`、`headers`、URL 查询参数、命令行参数一律脱敏后才对外返回 |
 
@@ -40,9 +42,10 @@
 
 - 顶部四张统计卡：Skill 总数、MCP 服务器数、MCP 工具数、当前工作目录
 - 两个标签页：**Skill** / **MCP**
-- 每行显示名称、提供方、来源、状态徽标、描述，右侧是「详情」按钮与开关
+- **响应式卡片栅格**：宽屏多列、窄屏自动收为单列。每张卡片四段信息层级——① 名称 + 状态徽标　② 提供方 / 来源 / 传输方式等标签　③ 两行截断的描述　④ 路径与操作区（详情 / 配置 / 开关）
 - 支持按名称 / 描述 / 来源实时搜索
-- 详情弹窗展示完整字段；Skill 展示指令正文，MCP 展示脱敏后的环境变量、请求头与工具清单
+- 头部 **「＋ 添加」** 按钮打开弹窗，可在「安装 Skill」与「配置 MCP」之间切换；表单带前端校验、提交中反馈与成功 / 失败提示
+- **详情弹窗**展示完整字段：Skill 展示指令正文，MCP 展示脱敏后的环境变量、请求头与工具清单
 
 界面完全复用 DSH 设计令牌（`--dsw-alias-*`），自动跟随明暗主题。
 
@@ -68,7 +71,9 @@ dsh plugin --profile <profile> add /absolute/path/to/dsh-skill-mcp-list
 
 ### Web 面板
 
-打开侧边栏的 **Skill 与 MCP**，在列表里直接拨动开关，或点「详情」查看完整信息。
+打开侧边栏的 **Skill 与 MCP**，在卡片上直接拨动开关、点「详情」查看完整信息，或点「配置」编辑该 MCP 条目。
+
+安装新 Skill：点头部「＋ 添加」→ 选「安装 Skill」→ 填写名称与描述 → 确定。新 Skill 会写入用户 skill 根（默认 `$DSH_HOME/skills`），随后自动出现在列表中。
 
 ### 模型工具
 
@@ -81,6 +86,8 @@ skill_mcp_list(action="disable_skill", target="archify")  # 禁用 Skill
 skill_mcp_list(action="enable_skill",  target="archify")  # 启用 Skill
 skill_mcp_list(action="disable_mcp",   target="mcp-dbx")  # 禁用 MCP
 skill_mcp_list(action="enable_mcp",    target="mcp-dbx")  # 启用 MCP
+skill_mcp_list(action="install_skill", spec={ name: "my-skill", description: "做了什么", body: "# 步骤" })            # 安装 Skill
+skill_mcp_list(action="configure_mcp",  target="mcp-dbx", config={ toolCallTimeoutMs: 120000, failOnStartupError: true })  # 配置 MCP
 ```
 
 `field` 参数可选择改哪个调用面：`model`（默认，模型侧目录）或 `user`（人类侧命令）。
@@ -113,6 +120,16 @@ DSH 的 Skill 由 `ctx.skills` 注册表统一提供，注册表本身是只读�
 profile 中每个 MCP 服务器都是 `@deepseek-ai/dsh-mcp-client` 的一个 Loader 条目。插件读取这些条目的配置与运行状态，启停则**完全委托官方 `ctx.pluginManager.setPluginEnabled()`**——由它原子地写入 profile 的 `cordis.patch.yml` 并触发 HMR 重载。
 
 插件自身不直接改配置文件，因此不会与官方插件管理器产生写冲突。
+
+### MCP 的配置
+
+配置走官方 `ctx.configEditor.edit()`：它用条目自身的 Config schema 校验完整候选值，保留 YAML 注释与 `!!js` 表达式，并在写盘失败时回滚到旧补丁。
+
+弹窗只放行白名单字段，且要求传输方式自洽——stdio 条目不能填 URL、http 条目不能填命令，换传输方式需重新配置条目。这避免了写出「加载即失败」的配置。
+
+### Skill 的安装
+
+新 Skill 写入用户 skill 根（priority 最高优先级为项目级根，安装固定落在 `user-dsh`）。`dsh-skill-filesystem` 通过监视器自动发现新目录，无需重启。同名 Skill 会被拒绝而不是覆盖。
 
 ### 数据通道
 
@@ -150,15 +167,19 @@ profile 中每个 MCP 服务器都是 `@deepseek-ai/dsh-mcp-client` 的一个 Lo
 npm test          # 运行全部测试
 ```
 
-测试分四层，共 47 个用例：
+测试分六层，共 107 个用例：
 
 | 文件 | 用例 | 覆盖 |
 |---|---|---|
 | `tests/core.test.mjs` | 19 | 纯逻辑：frontmatter 改写（幂等 / CRLF / 重复键 / 拒绝无 frontmatter）、凭据脱敏、投影与统计 |
 | `tests/api.test.mjs` | 10 | API 层：真实临时文件系统上的读写、只读目标拒绝、无 `pluginManager` 降级 |
 | `tests/http.test.mjs` | 10 | HTTP 层：信任栅栏、fail-closed、方法分发、错误映射、请求体上限 |
-| `tests/mount.test.mjs` | 6 | 真实 Cordis 挂载：工具注册、卸载注销、读写路径、权限拒绝 |
+| `tests/mount.test.mjs` | 11 | 真实 Cordis 挂载：工具注册、卸载注销、读写路径、权限拒绝、install/configure 端到端 |
 | `tests/client.test.mjs` | 2 | 客户端 bundle 契约与页面渲染（含最小 React 垫片） |
+| `tests/install.test.mjs` | 24 | 安装 / 配置纯逻辑：Skill Markdown 生成与转义、名称校验、MCP 补丁白名单与传输自洽 |
+| `tests/install-api.test.mjs` | 15 | 安装 / 配置 API 层：落盘、重复拒绝、非法名拒绝、configEditor 委托、DSH home 反推 |
+| `tests/install-http.test.mjs` | 6 | 安装 / 配置 HTTP 层：新 action 落盘、缺服务降级、非法补丁不写盘、栅栏仍生效 |
+| `tests/client-cards.test.mjs` | 10 | 卡片栅格四段层级、响应式断点、弹窗开关 / 表单校验 / 成功反馈 / 失败保留 |
 
 `mount` 与 `http` 两个文件需要 DSH 运行时包。首次运行前执行：
 
@@ -174,7 +195,8 @@ node scripts/fetch-runtime.mjs
 lib/core.mjs     纯逻辑：frontmatter 行级改写、凭据脱敏、投影与统计（零依赖）
 lib/api.mjs      宿主 API 层，不导入任何 @deepseek-ai/*，可独立测试
 lib/index.mjs    Cordis 接线：工具注册、HTTP 路由、权限升级
-lib/client.js    Web 面板（预构建浏览器 bundle）
+lib/install.mjs  安装 / 配置纯逻辑：SKILL.md 生成、MCP 补丁校验（零依赖）
+lib/client.js    Web 面板（预构建浏览器 bundle：卡片栅格 + 弹窗）
 ```
 
 ## 常见问题
@@ -200,6 +222,8 @@ A：请确认改的是 `model` 调用面。若之前用 `field: user` 禁用过�
 - **不新建存储**：插件不维护自己的状态文件，一切以 DSH 现有配置为准；因此外部工具直接改配置时，面板需刷新才能反映。
 - **MCP 条目需可寻址**：受官方插件管理器的 `readOnlyReason` 约束。
 - **项目级 Skill 依赖 `cwd`**：未传 `cwd` 时按进程工作目录发现。
+- **MCP 只配置、不新增**：新增 MCP 条目需要向 profile 追加 insert 行并触发 reconcile，官方未开放该 API（`configEditor` 只能编辑已存在条目）。绕过它会与官方插件管理器的文件锁和 HMR 排他锁冲突，因此本插件不支持新增 MCP 服务器。
+- **MCP 传输方式不可切换**：stdio 与 streamable-http 的配置结构不同，切换需重新配置条目。
 - **桌面版 profile 由应用独占**：安装 / 卸载需通过应用或官方 CLI，插件无法在运行中自行改 profile 依赖。
 
 ## 许可证
