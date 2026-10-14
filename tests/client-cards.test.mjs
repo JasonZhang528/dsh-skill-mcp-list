@@ -206,6 +206,22 @@ function mountPage(exports) {
   return { Page: found.component, regs };
 }
 
+/**
+ * 打开「添加」弹窗并切到「安装 Skill」分段。
+ * 默认停在「配置 MCP」，因此需要显式切换后才能测 Skill 表单。
+ * @param {object} shim React 垫片
+ * @param {Function} Page 页面组件
+ * @returns {Promise<object>} 切换后的元素树
+ */
+async function openInstallModal(shim, Page) {
+  let tree = await shim.render(Page);
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  tree = await shim.render(Page);
+  const segs = byClass(tree, 'sml-segBtn');
+  segs[0].props.onClick();
+  return shim.render(Page);
+}
+
 test('bundle 注册工厂并导出 apply / inject', async () => {
   const shim = createReactShim();
   const { exports } = await loadBundle(shim);
@@ -259,7 +275,7 @@ test('统计卡与标签页存在', async () => {
   assert.ok(byClass(tree, 'sml-cards').length === 1);
 });
 
-test('头部有「添加」触发入口，点击后打开弹窗', async () => {
+test('头部「添加」默认停在「配置 MCP」分段', async () => {
   const shim = createReactShim();
   const { exports } = await loadBundle(shim);
   const { Page } = mountPage(exports);
@@ -276,15 +292,55 @@ test('头部有「添加」触发入口，点击后打开弹窗', async () => {
   assert.ok(byClass(withModal, 'sml-mask').length >= 1, '点击添加后必须出现弹窗');
   const modal = byClass(withModal, 'sml-modal');
   assert.ok(modal.length >= 1);
-  assert.ok(collectText(modal[0]).join('').includes('安装 Skill'), '弹窗标题应为安装 Skill');
+  assert.ok(collectText(modal[0]).join('').includes('配置 MCP'), '默认标题应为配置 MCP');
 
-  // 弹窗内应有表单字段与两个分段按钮
-  assert.ok(byId(withModal, 'sml-skill-name').length === 1, '应有名称输入框');
-  assert.ok(byId(withModal, 'sml-skill-desc').length === 1, '应有描述输入框');
+  // 默认高亮第二个分段，且渲染的是 MCP 配置表单
   const segs = byClass(withModal, 'sml-segBtn');
   assert.equal(segs.length, 2, '应有「安装 Skill」与「配置 MCP」两个分段');
-  assert.ok(collectText(segs[0]).join('').includes('安装 Skill'));
+  assert.ok(collectText(segs[0]).join('').includes('安装 Skill'), '分段顺序保持安装在前');
   assert.ok(collectText(segs[1]).join('').includes('配置 MCP'));
+  assert.equal(segs[1].props.className.includes('is-on'), true, '默认应高亮「配置 MCP」');
+  assert.equal(segs[0].props.className.includes('is-on'), false);
+  // 默认应取第一个 MCP 条目，并渲染其条目名
+  assert.ok(collectText(modal[0]).join('').includes('mcp-dbx'), '默认应选中首个 MCP 条目');
+  assert.equal(byId(withModal, 'sml-skill-name').length, 0, '默认不应渲染 Skill 表单');
+});
+
+test('切到「安装 Skill」分段后渲染 Skill 表单', async () => {
+  const shim = createReactShim();
+  const { exports } = await loadBundle(shim);
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  tree = await shim.render(Page);
+
+  const segs = byClass(tree, 'sml-segBtn');
+  segs[0].props.onClick();
+  tree = await shim.render(Page);
+
+  assert.ok(byClass(tree, 'sml-modal').length >= 1);
+  assert.ok(byId(tree, 'sml-skill-name').length === 1, '应有名称输入框');
+  assert.ok(byId(tree, 'sml-skill-desc').length === 1, '应有描述输入框');
+  const segs2 = byClass(tree, 'sml-segBtn');
+  assert.equal(segs2[0].props.className.includes('is-on'), true, '切换后应高亮「安装 Skill」');
+});
+
+test('无 MCP 条目时「添加」回退到「安装 Skill」', async () => {
+  const shim = createReactShim();
+  const empty = snapshot();
+  empty.mcpServers = [];
+  empty.summary.mcp = { total: 0, enabled: 0, disabled: 0, toggleable: 0, tools: 0, transports: [] };
+  const { exports } = await loadBundle(shim, {
+    fetch: async () => ({ ok: true, status: 200, async json() { return empty; } }),
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  tree = await shim.render(Page);
+
+  const segs = byClass(tree, 'sml-segBtn');
+  assert.equal(segs[0].props.className.includes('is-on'), true, '无 MCP 时应回退到「安装 Skill」');
+  assert.ok(byId(tree, 'sml-skill-name').length === 1, '应渲染 Skill 表单');
 });
 
 test('弹窗可取消关闭', async () => {
@@ -338,9 +394,7 @@ test('安装表单校验失败时不调用宿主 API', async () => {
   };
   const { exports, calls } = await loadBundle(shim, handlers);
   const { Page } = mountPage(exports);
-  let tree = await shim.render(Page);
-  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
-  tree = await shim.render(Page);
+  let tree = await openInstallModal(shim, Page);
 
   // 表单为空 → 点确定 → 应出现错误提示且不发请求
   const okBtn = byClass(tree, 'sml-btn--primary').filter((b) => collectText(b).join('').includes('确定'))[0];
@@ -369,9 +423,7 @@ test('安装成功：调用宿主 API 并显示成功反馈', async () => {
   };
   const { exports, elements } = await loadBundle(shim, handlers);
   const { Page } = mountPage(exports);
-  let tree = await shim.render(Page);
-  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
-  tree = await shim.render(Page);
+  let tree = await openInstallModal(shim, Page);
 
   // 通过 DOM 注入表单值（弹窗从 DOM 读回）
   const setVal = (id, v) => { elements[id] = { value: v, checked: false }; };
@@ -410,9 +462,7 @@ test('安装失败：显示宿主返回的错误并保留弹窗', async () => {
   };
   const { exports, elements } = await loadBundle(shim, handlers);
   const { Page } = mountPage(exports);
-  let tree = await shim.render(Page);
-  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
-  tree = await shim.render(Page);
+  let tree = await openInstallModal(shim, Page);
 
   const setVal = (id, v) => { elements[id] = { value: v, checked: false }; };
   setVal('sml-skill-name', 'demo');

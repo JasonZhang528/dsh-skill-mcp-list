@@ -73,7 +73,9 @@ dsh plugin --profile <profile> add /absolute/path/to/dsh-skill-mcp-list
 
 打开侧边栏的 **Skill 与 MCP**，在卡片上直接拨动开关、点「详情」查看完整信息，或点「配置」编辑该 MCP 条目。
 
-安装新 Skill：点头部「＋ 添加」→ 选「安装 Skill」→ 填写名称与描述 → 确定。新 Skill 会写入用户 skill 根（默认 `$DSH_HOME/skills`），随后自动出现在列表中。
+头部「＋ 添加」默认停在 **「配置 MCP」**（已装条目更常需要调整），自动选中第一个 MCP 条目；若 profile 里一个 MCP 都没有，则回退到「安装 Skill」。
+
+安装新 Skill：点头部「＋ 添加」→ 切到「安装 Skill」→ 填写名称与描述 → 确定。新 Skill 会写入用户 skill 根（默认 `$DSH_HOME/skills`），随后自动出现在列表中。
 
 ### 模型工具
 
