@@ -5,6 +5,8 @@ node_modules/
 # 临时产物
 .tmp-*
 *.log
+# npm pack 产物（发布时本地生成，不入库）
+*.tgz
 
 # 编辑器 / 系统
 .vscode/
