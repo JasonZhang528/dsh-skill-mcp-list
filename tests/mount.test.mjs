@@ -22,13 +22,14 @@ const runtimeImport = (pkg) => import(pathToFileURL(join(RUNTIME, pkg, 'lib', 'i
 const RUNTIME_READY = existsSync(join(RUNTIME, '@deepseek-ai', 'cordis', 'lib', 'index.js'));
 const suite = RUNTIME_READY ? test : test.skip;
 
-let Context, ToolRuntime, SkillRegistry, plugin, root;
+let Context, ToolRuntime, SkillRegistry, createScope, plugin, root;
 
 before(async () => {
   if (!RUNTIME_READY) return;
   ({ Context } = await runtimeImport('@deepseek-ai/cordis'));
   ({ ToolRuntime } = await runtimeImport('@deepseek-ai/dsh-tools'));
   ({ SkillRegistry } = await runtimeImport('@deepseek-ai/dsh-skill'));
+  ({ createScope } = await runtimeImport('@deepseek-ai/dsh-scope'));
   plugin = await import(pathToFileURL(join(import.meta.dirname, '..', 'lib', 'index.mjs')).href);
   root = await mkdtemp(join(tmpdir(), 'dsh-sml-mount-'));
 });
@@ -335,15 +336,16 @@ suite('configure_mcp 走 configEditor 并返回规范化补丁', async () => {
     const result = JSON.parse(out);
     assert.equal(result.action, 'configure');
     assert.equal(result.serverName, 'a');
-    assert.deepEqual(result.changed, { toolCallTimeoutMs: 120000, failOnStartupError: true });
+    assert.equal(result.changed, true);
+    assert.deepEqual(result.patch, { toolCallTimeoutMs: 120000, failOnStartupError: true });
     assert.equal(edits.length, 1);
     assert.equal(edits[0].next.command, 'node', '既有字段不得丢失');
     assert.equal(edits[0].next.toolCallTimeoutMs, 120000);
 
-    // 非法补丁必须被拒且不触发写盘。
+    // 非法补丁必须被拒且不触发写盘：headers 对 stdio 条目无意义（应改用 env）。
     await assert.rejects(
-      () => tool.execute({ action: 'configure_mcp', target: 'mcp-a', config: { env: { X: 'y' } } }, exec),
-      /不可通过此界面修改/,
+      () => tool.execute({ action: 'configure_mcp', target: 'mcp-a', config: { headers: { X: 'y' } } }, exec),
+      /stdio 传输不支持 headers/,
     );
     assert.equal(edits.length, 1, '非法补丁不得触发 configEditor');
   } finally {
@@ -390,4 +392,77 @@ suite('插件卸载后工具与服务一并注销', async () => {
   await app.fiber.dispose();
   assert.equal(app.tools.get('skill_mcp_list'), undefined, '卸载后工具必须注销');
   assert.equal(app.ctx.get('skillMcpList'), undefined, '卸载后服务必须注销');
+});
+
+// ------------------------------------------------- 作用域视角（真实 Cordis）
+// 回归：官方把每个 preset 的 skill-filesystem 注册在**该 preset 的作用域层**，
+// 注册表读取是"全局层 + 调用方作用域链"的合并。因此不带 scope 的 list() 只看得到
+// 全局层的提供方；本用例在真实 SkillRegistry 上验证两条路径的差异与工具接线。
+suite('作用域视角：preset 层的 skill 必须可见，全局层不得冒充全量', async () => {
+  const dir = join(root, 'scope');
+  await mkdir(dir, { recursive: true });
+
+  const app = await mount();
+  try {
+    // 全局层提供方：模拟 bundled 部署级 skill。
+    app.skills.registerProvider(() => ({
+      name: 'global-provider',
+      async list() {
+        return [{
+          name: 'bundled-only', description: 'Bundled.', source: 'bundled', provider: 'global-provider',
+          rank: 600, path: join(dir, 'bundled.md'), invocation: { modelInvocable: true, userInvocable: true },
+        }];
+      },
+      async get() { return undefined; },
+    }));
+
+    // 作用域层提供方：挂在 scopeCtx 上，模拟 preset 内的 skill-filesystem。
+    // 真实契约：agent 对象本身就是它的作用域键
+    // （dsh-agent-loop: createScope(loopCtx, this)；dsh-tool-skill 传 scope: exec.agent）。
+    const agent = { id: 'session-1' };
+    const scoped = createScope(app.ctx, agent);
+    scoped.ctx.skills.registerProvider(() => ({
+      name: 'filesystem',
+      async list() {
+        return [{
+          name: 'user-skill', description: 'User.', source: 'user-dsh', provider: 'filesystem',
+          rank: 400, path: join(dir, 'user.md'), invocation: { modelInvocable: true, userInvocable: true },
+        }];
+      },
+      async get() {
+        return {
+          name: 'user-skill', description: 'User.', source: 'user-dsh', provider: 'filesystem',
+          path: join(dir, 'user.md'), content: '---\nname: user-skill\ndescription: User.\n---\n\nScoped body\n',
+          invocation: { modelInvocable: true, userInvocable: true },
+        };
+      },
+    }));
+
+    const tool = app.tools.get('skill_mcp_list');
+    const exec = { signal: new AbortController().signal, callId: 'scope1' };
+
+    // 1) 全局视角：只看得到全局层提供方 —— 正是修复前的症状。
+    const globalOut = JSON.parse(await tool.execute({ action: 'list', cwd: dir }, exec));
+    assert.deepEqual(globalOut.skills.map((s) => s.name), ['bundled-only'], '无 scope 时只能看到全局层');
+
+    // 2) 带 agent 视角：preset 层与全局层合并 —— 修复后的正确结果。
+    const scopedOut = JSON.parse(await tool.execute({ action: 'list', cwd: dir, sessionId: 'n/a' }, { ...exec, agent }));
+    assert.deepEqual(
+      scopedOut.skills.map((s) => s.name).sort(),
+      ['bundled-only', 'user-skill'],
+      '带 agent 视角时必须合并 preset 层',
+    );
+
+    // 3) 详情也必须在同一视角内可取到。
+    const detail = JSON.parse(await tool.execute({ action: 'detail', target: 'user-skill', cwd: dir }, { ...exec, agent }));
+    assert.match(detail.content, /Scoped body/);
+
+    // 4) 无视角时同一 skill 不可见 —— 证明视角是必要条件而非装饰。
+    await assert.rejects(
+      () => tool.execute({ action: 'detail', target: 'user-skill', cwd: dir }, exec),
+      /未找到/,
+    );
+  } finally {
+    await app.fiber.dispose();
+  }
 });

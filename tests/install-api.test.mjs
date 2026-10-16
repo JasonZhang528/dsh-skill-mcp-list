@@ -194,7 +194,9 @@ test('configureMcp 委托官方 configEditor 写入规范化补丁', async () =>
   assert.equal(result.target, 'mcp-a');
   assert.equal(result.action, 'configure');
   assert.equal(result.serverName, 'a');
-  assert.deepEqual(result.changed, { toolCallTimeoutMs: 120000, failOnStartupError: true });
+  // changed 恒为布尔（与其他写操作一致），补丁本身另放 patch 字段。
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.patch, { toolCallTimeoutMs: 120000, failOnStartupError: true });
   assert.equal(edits.length, 1, '必须调用一次 configEditor.edit');
   assert.deepEqual(edits[0].next, {
     serverName: 'a', transport: 'stdio', command: 'node', toolCallTimeoutMs: 120000, failOnStartupError: true,
@@ -226,7 +228,8 @@ test('configureMcp 非法补丁在写盘前被拒', async () => {
   const api = createApi(ctx, { cwd: root });
 
   for (const bad of [
-    { env: { TOKEN: 'x' } },
+    { headers: { A: 'b' } },
+    { env: { TOKEN: 1 } },
     { toolCallTimeoutMs: 0 },
     { toolCallTimeoutMs: -1 },
     { failOnStartupError: 'yes' },

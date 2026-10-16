@@ -19,6 +19,7 @@ const CLIENT = join(import.meta.dirname, '..', 'lib', 'client.js');
  */
 function createReactShim() {
   let states = [];
+  let refs = [];
   let cursor = 0;
   let effects = [];
   const cleanups = [];
@@ -61,7 +62,13 @@ function createReactShim() {
     },
     useCallback(fn) { cursor++; return fn; },
     useEffect(fn) { cursor++; effects.push(fn); },
-    useRef(init) { cursor++; return { current: init }; },
+    // ref 必须在多次渲染之间保持同一个对象——真实 React 正是如此，
+    // 若每次渲染新建，父组件通过 ref 读到的东西会在下一次渲染时丢掉。
+    useRef(init) {
+      const i = cursor++;
+      if (!(i in refs)) refs[i] = { current: init };
+      return refs[i];
+    },
   };
 
   const collectStatic = (node, out = []) => {
@@ -226,7 +233,8 @@ test('bundle 注册工厂并导出 apply / inject', async () => {
   const shim = createReactShim();
   const { exports } = await loadBundle(shim);
   assert.equal(typeof exports.apply, 'function');
-  assert.deepEqual(exports.inject, ['slots']);
+  // sessions 用于解析"当前会话视角"：skill 可见性按作用域链合并。
+  assert.deepEqual(exports.inject, ['sessions', 'slots']);
 });
 
 test('卡片栅格：列表改为 sml-grid + sml-item，四段层级齐全', async () => {
@@ -493,4 +501,345 @@ test('样式表包含卡片栅格与响应式断点', async () => {
   assert.match(css, /\.sml-itemFoot\{[^}]*margin-top:auto/, '操作区应贴底对齐');
   assert.match(css, /\.sml-mask\{/, '必须有弹窗遮罩样式');
   assert.match(css, /--dsw-alias-/, '必须复用 DSH 设计令牌');
+});
+
+
+// ------------------------------------------------------------ 归属标识与 MCP 表单
+test('归属徽标：系统与用户分别标注', async () => {
+  const shim = createReactShim();
+  const base = snapshot();
+  const { exports } = await loadBundle(shim, {
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        const data = base;
+        data.skills = [
+          { name: 'archify', description: 'A', provider: 'filesystem', source: 'user-dsh', origin: 'user', path: 'E:/a/SKILL.md', enabled: true, toggleable: true },
+          { name: 'office-docx', description: 'B', provider: 'dsh-office', source: 'bundled', origin: 'system', path: null, enabled: true, toggleable: false, toggleReason: '提供方未暴露指令文件路径' },
+        ];
+        data.summary.skills = { total: 2, enabled: 2, disabled: 0, toggleable: 1, system: 1, user: 1, providers: ['filesystem', 'dsh-office'], sources: ['user-dsh', 'bundled'] };
+        return data;
+      },
+    }),
+  });
+  const { Page } = mountPage(exports);
+  const tree = await shim.render(Page);
+
+  const userTags = byClass(tree, 'sml-tag--user');
+  const sysTags = byClass(tree, 'sml-tag--sys');
+  assert.equal(userTags.length, 1, '必须有一张卡片标记为"用户"');
+  assert.equal(sysTags.length, 1, '必须有一张卡片标记为"系统"');
+  // 徽标文案必须正好是两字术语，不得回退到旧的白话表述
+  assert.equal(collectText(userTags[0]).join(''), '用户');
+  assert.equal(collectText(sysTags[0]).join(''), '系统');
+  // 头部卡片应给出系统 / 用户的拆分
+  assert.ok(collectText(tree).join('').includes('系统 1 · 用户 1'), '统计卡必须展示归属拆分');
+});
+
+test('归属筛选：可只看用户归属的 Skill', async () => {
+  const shim = createReactShim();
+  const base = snapshot();
+  const { exports } = await loadBundle(shim, {
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        const data = base;
+        data.skills = [
+          { name: 'archify', description: 'A', provider: 'filesystem', source: 'user-dsh', origin: 'user', enabled: true, toggleable: true },
+          { name: 'office-docx', description: 'B', provider: 'dsh-office', source: 'bundled', origin: 'system', enabled: true, toggleable: false },
+        ];
+        data.summary.skills = { total: 2, enabled: 2, disabled: 0, toggleable: 1, system: 1, user: 1, providers: [], sources: [] };
+        return data;
+      },
+    }),
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+  assert.equal(byClass(tree, 'sml-item').length, 2, '默认显示全部');
+
+  const select = byClass(tree, 'sml-input').find((n) => n.props && n.props['aria-label'] === '按归属筛选');
+  assert.ok(select, '必须有归属筛选下拉');
+  select.props.onChange({ target: { value: 'user' } });
+  tree = await shim.render(Page);
+  assert.equal(byClass(tree, 'sml-item').length, 1, '筛选后只剩用户 Skill');
+  assert.match(collectText(byClass(tree, 'sml-item')[0]).join(''), /archify/);
+});
+
+test('MCP 表单：勾选框受控、env/headers 可编辑、参数逐行', async () => {
+  const shim = createReactShim();
+  const { exports } = await loadBundle(shim);
+  const { Page } = mountPage(exports);
+  const tree = await shim.render(Page);
+
+  // 打开「配置 MCP」弹窗（默认即停在此模式）。
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  const modal = await shim.render(Page);
+
+  // 快照里的条目是 streamable-http，因此展示 URL 分支而非 stdio 参数；
+  // stdio 的参数框由下一条用例（注入 stdio 快照）覆盖。
+  assert.ok(byId(modal, 'sml-mcp-url').length >= 1, 'http 条目必须显示 URL 输入');
+
+  // 2) 勾选框必须是受控的：checked 绑定 state，onChange 是真实处理器
+  const fail = byId(modal, 'sml-mcp-fail')[0];
+  assert.equal(typeof fail.props.onChange, 'function', '勾选框必须有 onChange');
+  assert.equal(fail.props.checked, false, '初始值来自快照');
+  fail.props.onChange();
+  const after = await shim.render(Page);
+  assert.equal(byId(after, 'sml-mcp-fail')[0].props.checked, true, '点击后必须真的翻转');
+
+  // 3) http 条目应提供 headers 编辑，且回显已配置的键名
+  const map = byId(after, 'sml-mcp-map')[0];
+  assert.ok(map, '必须提供 env / headers 编辑框');
+  assert.equal(map.type, 'textarea');
+  assert.equal(map.props.value, '', '既有值已脱敏，不回显');
+
+  // 4) 重连子字段随开关出现
+  assert.ok(byId(after, 'sml-mcp-rc-initial').length >= 1, '开启重连后应显示子字段');
+});
+
+test('MCP 表单：提交按行解析 env 并带上重连子字段', async () => {
+  const shim = createReactShim();
+  const sent = [];
+  const { exports } = await loadBundle(shim, {
+    fetch: async (url, init) => {
+      if (init && init.method === 'POST') {
+        sent.push(JSON.parse(init.body));
+        return { ok: true, status: 200, async json() { return { changed: true }; } };
+      }
+      return { ok: true, status: 200, async json() { return snapshot(); } };
+    },
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  tree = await shim.render(Page);
+
+  // stdio 条目才有 env；快照里是 http，这里直接改断言对象不现实，
+  // 因此验证 http 分支：填 headers。
+  const map = byId(tree, 'sml-mcp-map')[0];
+  assert.ok(map, '必须找到 env / headers 输入框');
+  map.props.onChange({ target: { value: 'Authorization=Bearer abc\nX-Trace=1' } });
+  // 渲染若干轮，让表单的 useEffect 把最新状态同步到 formRef。
+  tree = await shim.render(Page);
+  assert.equal(byId(tree, 'sml-mcp-map')[0].props.value, 'Authorization=Bearer abc\nX-Trace=1', '输入必须被表单接收');
+
+  const okBtn = byClass(tree, 'sml-btn--primary').filter((b) => collectText(b).join('').includes('确定'))[0];
+  await okBtn.props.onClick();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+
+  const configure = sent.find((b) => b.action === 'configure_mcp');
+  assert.ok(configure, '必须发出 configure_mcp 请求');
+  assert.deepEqual(configure.config.headers, { Authorization: 'Bearer abc', 'X-Trace': '1' }, 'headers 必须按行解析');
+  assert.equal(configure.config.reconnect.enabled, true, '重连开关必须随表单提交');
+  assert.equal(typeof configure.config.reconnect.maxAttempts, 'number');
+  assert.equal(configure.config.failOnStartupError, false);
+});
+
+test('提示文案：宿主报告未变更时不谎称"已更新"', async () => {
+  const shim = createReactShim();
+  const { exports } = await loadBundle(shim, {
+    fetch: async (url, init) => {
+      if (init && init.method === 'POST') return { ok: true, status: 200, async json() { return { changed: false }; } };
+      return { ok: true, status: 200, async json() { return snapshot(); } };
+    },
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+
+  const sw = byClass(tree, 'sml-sw')[0];
+  assert.equal(typeof sw.props.onClick, 'function', '开关必须有 onClick 处理器');
+  await sw.props.onClick();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  tree = await shim.render(Page);
+
+  const ok = byClass(tree, 'sml-ok')[0];
+  assert.ok(ok, '必须显示成功提示条');
+  assert.match(collectText(ok).join(''), /无需改动/, 'changed=false 时必须如实说明，而不是显示已更新');
+});
+
+
+test('MCP 表单（stdio）：参数逐行编辑且不拆散含空格的参数', async () => {
+  const shim = createReactShim();
+  const sent = [];
+  const stdioSnapshot = {
+    ok: true,
+    generatedAt: Date.now(),
+    cwd: 'E:/WorkSpace/Projects/dsh',
+    summary: { skills: { total: 0, enabled: 0, disabled: 0, toggleable: 0, system: 0, user: 0, providers: [], sources: [] }, mcp: { total: 1, enabled: 1, disabled: 0, toggleable: 1, tools: 0, transports: ['stdio'] } },
+    skills: [],
+    mcpServers: [{
+      entryId: 'mcp-ct', serverName: 'chrome-devtools', transport: 'stdio', enabled: true, fiberPhase: 'active', toggleable: true,
+      toolCount: 0, toolNames: [], toolCallTimeoutMs: 120000, failOnStartupError: false,
+      connection: { kind: 'stdio', command: 'node', args: ['a b', '-y', 'C:/path with space/x.js'], cwd: 'D:/w', env: [{ name: 'TOKEN', value: '[redacted]' }] },
+    }],
+    capabilities: { skillToggle: true, skillInstall: true, mcpToggle: true, mcpConfigure: true, detail: true },
+  };
+  const { exports } = await loadBundle(shim, {
+    fetch: async (url, init) => {
+      if (init && init.method === 'POST') {
+        sent.push(JSON.parse(init.body));
+        return { ok: true, status: 200, async json() { return { changed: true }; } };
+      }
+      return { ok: true, status: 200, async json() { return stdioSnapshot; } };
+    },
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  tree = await shim.render(Page);
+
+  // 参数逐行回显：含空格的参数必须完整保留在一行里。
+  const args = byId(tree, 'sml-mcp-args')[0];
+  assert.ok(args, 'stdio 条目必须有参数输入');
+  assert.equal(args.type, 'textarea', '参数必须逐行编辑');
+  assert.equal(args.props.value, 'a b\n-y\nC:/path with space/x.js', '既有参数按行回显');
+
+  // 填一个环境变量，验证 stdio 分支走 env 而非 headers。
+  byId(tree, 'sml-mcp-map')[0].props.onChange({ target: { value: 'NEW_KEY=abc' } });
+  // 勾上"启动失败即拒绝"，验证受控勾选框真的进入提交体。
+  byId(tree, 'sml-mcp-fail')[0].props.onChange();
+  tree = await shim.render(Page);
+
+  const okBtn = byClass(tree, 'sml-btn--primary').filter((b) => collectText(b).join('').includes('确定'))[0];
+  await okBtn.props.onClick();
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+
+  const configure = sent.find((b) => b.action === 'configure_mcp');
+  assert.ok(configure, '必须发出 configure_mcp 请求');
+  assert.deepEqual(configure.config.args, ['a b', '-y', 'C:/path with space/x.js'], '含空格的参数不得被拆散');
+  assert.deepEqual(configure.config.env, { NEW_KEY: 'abc' }, 'stdio 条目必须提交 env');
+  assert.equal(configure.config.headers, undefined, '不得写入 headers');
+  assert.equal(configure.config.failOnStartupError, true, '勾选框状态必须进入提交体');
+});
+
+// ---------------------------------------------- 前后端版本错配（旧宿主 + 新面板）
+// 真实故障复现：客户端 bundle 的 rev 由文件 mtime/size 推导，改动后浏览器立即生效；
+// 宿主模块只在进程启动时导入，未重启则不更新。于是"新面板 + 旧宿主"这一窗口期内，
+// 宿主快照里没有 origin / system / user 字段——面板必须自行兜底，而不是显示 undefined。
+test('版本错配：旧宿主不提供 origin / system / user 时不得显示 undefined', async () => {
+  const shim = createReactShim();
+  const legacy = {
+    ok: true,
+    generatedAt: Date.now(),
+    cwd: 'E:/WorkSpace/Projects/dsh',
+    // 故意使用旧版宿主的 summary：没有 system / user 计数。
+    summary: {
+      skills: { total: 2, enabled: 2, disabled: 0, toggleable: 1, providers: ['filesystem', 'dsh-office'], sources: ['user-dsh', 'bundled'] },
+      mcp: { total: 0, enabled: 0, disabled: 0, toggleable: 0, tools: 0, transports: [] },
+    },
+    // 故意使用旧版宿主的 skill 投影：没有 origin 字段。
+    skills: [
+      { name: 'archify', description: 'A', provider: 'filesystem', source: 'user-dsh', path: 'E:/a/SKILL.md', enabled: true, toggleable: true },
+      { name: 'office-docx', description: 'B', provider: 'dsh-office', source: 'bundled', path: null, enabled: true, toggleable: false },
+    ],
+    mcpServers: [],
+    capabilities: { skillToggle: true, skillInstall: true, mcpToggle: true, mcpConfigure: true, detail: true },
+  };
+  const { exports } = await loadBundle(shim, {
+    fetch: async () => ({ ok: true, status: 200, async json() { return legacy; } }),
+  });
+  const { Page } = mountPage(exports);
+  const tree = await shim.render(Page);
+
+  const all = collectText(tree).join('');
+  assert.equal(all.includes('undefined'), false, '面板不得出现 undefined');
+  assert.ok(all.includes('系统 1 · 用户 1'), '缺失计数时必须就地推导：' + all.slice(0, 200));
+
+  // 徽标与筛选同样要兜底
+  assert.equal(byClass(tree, 'sml-tag--user').length, 1, 'user-dsh 必须判为用户');
+  assert.equal(byClass(tree, 'sml-tag--sys').length, 1, 'bundled 必须判为系统');
+});
+
+test('旧宿主的真实字段形态：reconnect 为 null、env / headers 为 {name,value} 数组', async () => {
+  const shim = createReactShim();
+  // 与线上旧宿主真实返回完全一致：stdio 条目 env 是数组、reconnect 是 null、
+  // maxInstructionBytes 是 null；http 条目 headers 是数组且不含 env 键。
+  const real = {
+    ok: true,
+    generatedAt: Date.now(),
+    cwd: 'D:/ProgramData/DeepSeek/.dsh/profiles/desktop',
+    summary: {
+      skills: { total: 0, enabled: 0, disabled: 0, toggleable: 0, providers: [], sources: [] },
+      mcp: { total: 2, enabled: 2, disabled: 0, toggleable: 2, tools: 53, transports: ['stdio', 'streamable-http'] },
+    },
+    skills: [],
+    mcpServers: [
+      {
+        entryId: 'include:mcp-chrome-devtools', serverName: 'chrome-devtools', transport: 'stdio', enabled: true,
+        fiberPhase: 'active', toggleable: true, toolCount: 30, toolNames: [],
+        toolCallTimeoutMs: 120000, failOnStartupError: false, reconnect: null, maxInstructionBytes: null,
+        connection: { kind: 'stdio', command: 'node', args: ['a b'], cwd: 'D:/w', env: [] },
+      },
+      {
+        entryId: 'include:mcp-siyuan', serverName: 'siyuan', transport: 'streamable-http', enabled: true,
+        fiberPhase: 'active', toggleable: true, toolCount: 30, toolNames: [],
+        toolCallTimeoutMs: 60000, failOnStartupError: false, reconnect: null, maxInstructionBytes: null,
+        connection: { kind: 'streamable-http', url: 'http://h/mcp', headers: [{ name: 'Authorization', value: '[redacted]' }] },
+      },
+    ],
+    capabilities: { skillToggle: true, skillInstall: true, mcpToggle: true, mcpConfigure: true, detail: true },
+  };
+  const { exports } = await loadBundle(shim, {
+    fetch: async () => ({ ok: true, status: 200, async json() { return real; } }),
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+  assert.equal(collectText(tree).join('').includes('undefined'), false, '列表不得出现 undefined');
+
+  // 打开配置 MCP：默认选中第一个条目（chrome-devtools，stdio）
+  byClass(tree, 'sml-btn--primary').find((b) => collectText(b).join('').includes('添加')).props.onClick();
+  tree = await shim.render(Page);
+  assert.ok(byId(tree, 'sml-mcp-args').length >= 1, 'stdio 条目必须渲染参数框');
+  assert.ok(byId(tree, 'sml-mcp-map').length >= 1, 'stdio 条目必须渲染 env 框');
+  assert.equal(byId(tree, 'sml-mcp-fail')[0].props.checked, false, 'reconnect=null 不得影响渲染');
+  assert.equal(collectText(tree).join('').includes('undefined'), false, 'stdio 表单不得出现 undefined');
+
+  // 切到 http 条目（siyuan）：应显示 headers 且列出现有键名
+  const closeBtn = byClass(tree, 'sml-btn').find((b) => (b.props['aria-label'] || '') === '关闭');
+  if (closeBtn) closeBtn.props.onClick();
+  tree = await shim.render(Page);
+  // 默认停在 Skill 标签页，切到 MCP 才能看到服务器卡片。
+  byClass(tree, 'sml-tab').find((b) => collectText(b).join('').includes('MCP')).props.onClick();
+  tree = await shim.render(Page);
+  const siyuanRow = byClass(tree, 'sml-item').find((n) => collectText(n).join('').includes('siyuan'));
+  assert.ok(siyuanRow, '必须找到 siyuan 卡片');
+  byClass(siyuanRow, 'sml-btn').find((b) => collectText(b).join('') === '配置').props.onClick();
+  tree = await shim.render(Page);
+  assert.ok(byId(tree, 'sml-mcp-url').length >= 1, 'http 条目必须渲染 URL');
+  assert.match(collectText(tree).join(''), /已配置的键：Authorization/, '必须列出现有键名且不回显值');
+  assert.equal(collectText(tree).join('').includes('undefined'), false, 'http 表单不得出现 undefined');
+});
+
+test('排序：系统 Skill 排在用户 Skill 之前（旧宿主无 origin 亦成立）', async () => {
+  const shim = createReactShim();
+  // 故意把用户 Skill 放在第一位，且不给 origin 字段（模拟旧宿主）
+  const legacy = {
+    ok: true,
+    generatedAt: Date.now(),
+    cwd: 'E:/WorkSpace/Projects/dsh',
+    summary: {
+      skills: { total: 3, enabled: 3, disabled: 0, toggleable: 1, providers: [], sources: [] },
+      mcp: { total: 0, enabled: 0, disabled: 0, toggleable: 0, tools: 0, transports: [] },
+    },
+    skills: [
+      { name: 'archify', description: 'A', provider: 'filesystem', source: 'user-dsh', enabled: true, toggleable: true },
+      { name: 'office-docx', description: 'B', provider: 'dsh-office', source: 'bundled', enabled: true, toggleable: false },
+      { name: 'office-pptx', description: 'C', provider: 'dsh-office', source: 'bundled', enabled: true, toggleable: false },
+    ],
+    mcpServers: [],
+    capabilities: { skillToggle: true, skillInstall: true, mcpToggle: true, mcpConfigure: true, detail: true },
+  };
+  const { exports } = await loadBundle(shim, {
+    fetch: async () => ({ ok: true, status: 200, async json() { return legacy; } }),
+  });
+  const { Page } = mountPage(exports);
+  const tree = await shim.render(Page);
+
+  const names = byClass(tree, 'sml-item').map((c) => collectText(byClass(c, 'sml-itemName')[0]).join(''));
+  assert.deepEqual(names, ['office-docx', 'office-pptx', 'archify'], '系统两项在前且按名称升序，用户 Skill 在后');
 });

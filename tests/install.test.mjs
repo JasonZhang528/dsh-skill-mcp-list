@@ -122,9 +122,29 @@ test('normalizeMcpPatch 接受常见配置字段', () => {
 });
 
 test('normalizeMcpPatch 拒绝未知字段', () => {
-  const out = normalizeMcpPatch({ env: { TOKEN: 'x' } }, { transport: 'stdio' });
+  const out = normalizeMcpPatch({ bogusField: 'x' }, { transport: 'stdio', command: 'node' });
   assert.equal(out.ok, false);
   assert.match(out.reason, /不可通过此界面修改/);
+});
+
+test('normalizeMcpPatch 接受 env / headers 映射并按传输校验', () => {
+  // stdio 用 env，http 用 headers；值必须是字符串，null 表示删除该键。
+  const stdio = normalizeMcpPatch({ env: { API_KEY: 'k' } }, { transport: 'stdio', command: 'node' });
+  assert.equal(stdio.ok, true);
+  assert.deepEqual(stdio.patch, { env: { API_KEY: 'k' } });
+
+  const http = normalizeMcpPatch({ headers: { Authorization: 'Bearer t' } }, { transport: 'streamable-http', url: 'http://h/mcp' });
+  assert.equal(http.ok, true);
+
+  // 交叉使用会被拒，否则写出的条目加载即失败。
+  assert.equal(normalizeMcpPatch({ headers: { A: 'b' } }, { transport: 'stdio', command: 'node' }).ok, false);
+  assert.equal(normalizeMcpPatch({ env: { A: 'b' } }, { transport: 'streamable-http', url: 'http://h/mcp' }).ok, false);
+  // 非字符串值被拒；null 是删除语义，必须放行。
+  assert.equal(normalizeMcpPatch({ env: { A: 1 } }, { transport: 'stdio', command: 'node' }).ok, false);
+  assert.deepEqual(
+    normalizeMcpPatch({ env: { A: null } }, { transport: 'stdio', command: 'node' }).patch,
+    { env: { A: null } },
+  );
 });
 
 test('normalizeMcpPatch 拒绝非对象输入', () => {

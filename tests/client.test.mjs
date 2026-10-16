@@ -202,7 +202,9 @@ test('client bundle 注册工厂并导出 apply / inject', async () => {
   assert.equal(registration.id, 'dsh-skill-mcp-list', 'id 必须与 package.json 名称一致');
   assert.equal(typeof registration.factory, 'function');
   assert.equal(typeof exports.apply, 'function');
-  assert.deepEqual(exports.inject, ['slots']);
+  // sessions 是读取"当前会话视角"所必需的：skill 可见性按作用域链合并，
+  // 不带会话就读不到 preset 层里的用户 / 项目级 skill。
+  assert.deepEqual(exports.inject, ['sessions', 'slots']);
 
   // apply() 应注入样式
   const registrations = [];

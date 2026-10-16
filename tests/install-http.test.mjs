@@ -164,7 +164,8 @@ suite('POST configure_mcp 走 configEditor 并返回变更', async () => {
     assert.equal(res.statusCode, 200);
     const payload = JSON.parse(res.body);
     assert.equal(payload.action, 'configure');
-    assert.deepEqual(payload.changed, { toolCallTimeoutMs: 90000 });
+    assert.equal(payload.changed, true);
+    assert.deepEqual(payload.patch, { toolCallTimeoutMs: 90000 });
     assert.equal(edits.length, 1);
     assert.equal(edits[0].toolCallTimeoutMs, 90000);
     // 既有字段不得丢失。
@@ -200,7 +201,7 @@ suite('POST configure_mcp 非法补丁在写盘前被拒', async () => {
   try {
     const res = makeRes();
     await app.route.handler(
-      makeReq('POST', '/api/skill-mcp-list', { action: 'configure_mcp', target: 'mcp-a', config: { env: { X: 'y' } } }),
+      makeReq('POST', '/api/skill-mcp-list', { action: 'configure_mcp', target: 'mcp-a', config: { headers: { X: 'y' } } }),
       res,
     );
     assert.equal(res.statusCode, 500);
