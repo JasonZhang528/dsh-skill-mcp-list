@@ -534,7 +534,7 @@ test('归属徽标：系统与用户分别标注', async () => {
   assert.equal(collectText(userTags[0]).join(''), '用户');
   assert.equal(collectText(sysTags[0]).join(''), '系统');
   // 头部卡片应给出系统 / 用户的拆分
-  assert.ok(collectText(tree).join('').includes('系统 1 · 用户 1'), '统计卡必须展示归属拆分');
+  assert.ok(collectText(tree).join('').includes('用户 1 · 系统 1'), '统计卡必须展示归属拆分');
 });
 
 test('归属筛选：可只看用户归属的 Skill', async () => {
@@ -748,7 +748,7 @@ test('版本错配：旧宿主不提供 origin / system / user 时不得显示 u
 
   const all = collectText(tree).join('');
   assert.equal(all.includes('undefined'), false, '面板不得出现 undefined');
-  assert.ok(all.includes('系统 1 · 用户 1'), '缺失计数时必须就地推导：' + all.slice(0, 200));
+  assert.ok(all.includes('用户 1 · 系统 1'), '缺失计数时必须就地推导：' + all.slice(0, 200));
 
   // 徽标与筛选同样要兜底
   assert.equal(byClass(tree, 'sml-tag--user').length, 1, 'user-dsh 必须判为用户');
@@ -815,9 +815,9 @@ test('旧宿主的真实字段形态：reconnect 为 null、env / headers 为 {n
   assert.equal(collectText(tree).join('').includes('undefined'), false, 'http 表单不得出现 undefined');
 });
 
-test('排序：系统 Skill 排在用户 Skill 之前（旧宿主无 origin 亦成立）', async () => {
+test('排序：用户 Skill 排在系统 Skill 之前（旧宿主无 origin 亦成立）', async () => {
   const shim = createReactShim();
-  // 故意把用户 Skill 放在第一位，且不给 origin 字段（模拟旧宿主）
+  // 故意把系统 Skill 排在前面，且不给 origin 字段（模拟旧宿主）
   const legacy = {
     ok: true,
     generatedAt: Date.now(),
@@ -841,5 +841,5 @@ test('排序：系统 Skill 排在用户 Skill 之前（旧宿主无 origin 亦�
   const tree = await shim.render(Page);
 
   const names = byClass(tree, 'sml-item').map((c) => collectText(byClass(c, 'sml-itemName')[0]).join(''));
-  assert.deepEqual(names, ['office-docx', 'office-pptx', 'archify'], '系统两项在前且按名称升序，用户 Skill 在后');
+  assert.deepEqual(names, ['archify', 'office-docx', 'office-pptx'], '用户 Skill 在前，系统两项在后且按名称升序');
 });

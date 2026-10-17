@@ -241,20 +241,20 @@ test('summarize 统计启停与工具数', () => {
   assert.deepEqual(out.mcp.transports, ['stdio', 'streamable-http']);
 });
 
-test('projectSkills 按归属排序：系统在前、用户在后，组内按名称', () => {
+test('projectSkills 按归属排序：用户在前、系统在后，组内按名称', () => {
   const rows = projectSkills([
     { name: 'zzz', description: 'z', provider: 'filesystem', source: 'user-dsh', path: '/z/SKILL.md' },
     { name: 'aaa', description: 'a', provider: 'dsh-office', source: 'bundled', path: null },
     { name: 'bbb', description: 'b', provider: 'dsh-office', source: 'bundled', path: null },
     { name: 'mmm', description: 'm', provider: 'filesystem', source: 'user-dsh', path: '/m/SKILL.md' },
   ]);
-  assert.deepEqual(rows.map((r) => r.name), ['aaa', 'bbb', 'mmm', 'zzz'], '系统两项在前且按名称升序，用户两项在后');
-  assert.deepEqual(rows.map((r) => r.origin), ['system', 'system', 'user', 'user']);
+  assert.deepEqual(rows.map((r) => r.name), ['mmm', 'zzz', 'aaa', 'bbb'], '用户两项在前且按名称升序，系统两项在后');
+  assert.deepEqual(rows.map((r) => r.origin), ['user', 'user', 'system', 'system']);
 
-  // 运行时注册的技能同样归为系统，必须排在用户之前
+  // 运行时注册的技能同样归为系统，必须排在用户之后
   const withRuntime = projectSkills([
     { name: 'user-skill', provider: 'filesystem', source: 'user-dsh', path: '/u/SKILL.md' },
     { name: 'runtime-skill', provider: 'runtime', source: 'runtime', path: null },
   ]);
-  assert.deepEqual(withRuntime.map((r) => r.name), ['runtime-skill', 'user-skill']);
+  assert.deepEqual(withRuntime.map((r) => r.name), ['user-skill', 'runtime-skill']);
 });
