@@ -453,9 +453,10 @@ test('安装成功：调用宿主 API 并显示成功反馈', async () => {
   });
   // 成功后弹窗关闭并显示成功反馈
   assert.equal(byClass(tree, 'sml-modal').length, 0, '成功后弹窗应关闭');
-  const oks = byClass(tree, 'sml-ok');
-  assert.ok(oks.length >= 1, '应显示成功反馈');
-  assert.ok(collectText(oks[0]).join('').includes('已安装 demo-skill'));
+  const toasts = byClass(tree, 'sml-toast');
+  assert.ok(toasts.length >= 1, '应以浮层提示显示成功反馈');
+  assert.ok(byClass(tree, 'sml-toastIcon--ok').length >= 1, '成功提示必须带成功图标');
+  assert.ok(collectText(toasts[0]).join('').includes('已安装 demo-skill'));
 });
 
 test('安装失败：显示宿主返回的错误并保留弹窗', async () => {
@@ -656,9 +657,51 @@ test('提示文案：宿主报告未变更时不谎称"已更新"', async () => 
   await new Promise((r) => setTimeout(r, 0));
   tree = await shim.render(Page);
 
-  const ok = byClass(tree, 'sml-ok')[0];
-  assert.ok(ok, '必须显示成功提示条');
+  const ok = byClass(tree, 'sml-toast')[0];
+  assert.ok(ok, '必须以浮层提示显示操作结果');
   assert.match(collectText(ok).join(''), /无需改动/, 'changed=false 时必须如实说明，而不是显示已更新');
+});
+
+test('开关加载态：写入进行中显示旋转指示且禁用重复点击', async () => {
+  const shim = createReactShim();
+  let releasePost;
+  const gate = new Promise((r) => { releasePost = r; });
+  const { exports } = await loadBundle(shim, {
+    fetch: async (url, init) => {
+      if (init && init.method === 'POST') {
+        // 挂起 POST，直到测试主动放行——从而稳定观察"加载中"的中间态。
+        await gate;
+        return { ok: true, status: 200, async json() { return { changed: true }; } };
+      }
+      return { ok: true, status: 200, async json() { return snapshot(); } };
+    },
+  });
+  const { Page } = mountPage(exports);
+  let tree = await shim.render(Page);
+
+  const sw = byClass(tree, 'sml-sw')[0];
+  const toggle = sw.props.onClick;
+  assert.equal(typeof toggle, 'function', '开关必须有 onClick 处理器');
+
+  // 触发但不等待：POST 被 gate 挂起，此刻应处于加载态
+  const pending = toggle();
+  await new Promise((r) => setTimeout(r, 0));
+  tree = await shim.render(Page);
+
+  const busySw = byClass(tree, 'sml-sw')[0];
+  assert.ok(busySw.props.className.includes('is-loading'), '加载中开关必须带 is-loading（旋转指示）');
+  assert.ok(!busySw.props.className.includes('is-on'), '加载中不得显示 is-on 的位置态，避免状态先跳变');
+  assert.equal(busySw.props.disabled, true, '加载中必须禁用点击，避免重复提交');
+  // label 是 props（aria-label / title）而非子节点文本，直接读 props
+  assert.match(String(busySw.props['aria-label'] || busySw.props.title || ''), /正在|处理中/, '加载中应给出"正在…"的无障碍标签');
+
+  // 放行 POST 并等待收尾
+  releasePost();
+  await pending;
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  tree = await shim.render(Page);
+  assert.ok(!byClass(tree, 'sml-sw')[0].props.className.includes('is-loading'), '完成后必须退出加载态');
 });
 
 
