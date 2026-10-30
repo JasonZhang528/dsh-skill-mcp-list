@@ -251,6 +251,86 @@ test('setMcpEnabled 委托 pluginManager 并拒绝只读目标', async () => {
   assert.deepEqual(calls, [['mcp-a', false]], '只读目标不得触发任何写入');
 });
 
+test('setMcpEnabled / configureMcp 按 serverName 别名解析目标', async () => {
+  // 模型侧工具命名空间是 mcp__<serverName>__<tool>，写操作必须能按 serverName 命中，
+  // 而不是只认 entryId——否则模型传命名空间里的名字会被"不存在"挡住。
+  const calls = [];
+  const edited = [];
+  const manager = {
+    async listPlugins() { return [{ entryId: 'mcp-a', patchId: 'mcp-a', moduleName: MCP_MODULE, enabled: true }]; },
+    async setPluginEnabled(id, enabled) { calls.push([id, enabled]); return { target: id, enabled }; },
+  };
+  const ctx = fakeCtx({
+    entries: [
+      { id: 'mcp-a', options: { name: MCP_MODULE, config: { serverName: 'alpha', transport: 'stdio', command: 'node' } }, disabled: false },
+    ],
+    pluginManager: manager,
+  });
+  ctx.get = (name) => {
+    if (name === 'pluginManager') return manager;
+    if (name === 'configEditor') return { async edit(entry, fn) { edited.push(entry.id); await fn({}); } };
+    return undefined;
+  };
+  const api = createApi(ctx, { cwd: root });
+
+  // serverName（alpha）与 entryId（mcp-a）都必须命中同一个条目。
+  const byName = await api.setMcpEnabled('alpha', false);
+  assert.equal(byName.serverName, 'alpha');
+  assert.deepEqual(calls, [['mcp-a', false]], '按 serverName 解析后必须落到正确的 entryId');
+  const byId = await api.setMcpEnabled('mcp-a', true);
+  assert.equal(byId.enabled, true);
+  assert.deepEqual(calls, [['mcp-a', false], ['mcp-a', true]]);
+
+  const cfg = await api.configureMcp('alpha', { toolCallTimeoutMs: 90000 });
+  assert.equal(cfg.target, 'mcp-a');
+  assert.deepEqual(edited, ['mcp-a']);
+
+  // 不存在时错误信息应提示两种可用标识。
+  await assert.rejects(() => api.setMcpEnabled('nope', false), /entryId 或 serverName/);
+});
+
+test('configureMcp 数值字段传 null 恢复默认值', async () => {
+  const ctx = fakeCtx({
+    entries: [
+      { id: 'mcp-a', options: { name: MCP_MODULE, config: { serverName: 'a', transport: 'stdio', command: 'node', toolCallTimeoutMs: 30000 } }, disabled: false },
+    ],
+    pluginManager: { async listPlugins() { return [{ entryId: 'mcp-a', patchId: 'mcp-a', moduleName: MCP_MODULE, enabled: true }]; } },
+  });
+  let saved;
+  ctx.get = (name) => {
+    if (name === 'pluginManager') return ctx.pluginManager;
+    if (name === 'configEditor') return { async edit(entry, fn) { saved = fn({ toolCallTimeoutMs: 30000 }); } };
+    return undefined;
+  };
+  const api = createApi(ctx, { cwd: root });
+
+  const result = await api.configureMcp('mcp-a', { toolCallTimeoutMs: null });
+  assert.equal(result.changed, true, 'null 清除字段应视为真实变更');
+  assert.equal(result.patch.toolCallTimeoutMs, null);
+  assert.equal(saved.toolCallTimeoutMs, undefined, '合并后字段必须被删除，写盘配置回落到默认值');
+});
+
+test('configureMcp cwd 传空串显式清空', async () => {
+  const ctx = fakeCtx({
+    entries: [
+      { id: 'mcp-a', options: { name: MCP_MODULE, config: { serverName: 'a', transport: 'stdio', command: 'node', cwd: 'D:/work' } }, disabled: false },
+    ],
+    pluginManager: { async listPlugins() { return [{ entryId: 'mcp-a', patchId: 'mcp-a', moduleName: MCP_MODULE, enabled: true }]; } },
+  });
+  let saved;
+  ctx.get = (name) => {
+    if (name === 'pluginManager') return ctx.pluginManager;
+    if (name === 'configEditor') return { async edit(entry, fn) { saved = fn({ cwd: 'D:/work' }); } };
+    return undefined;
+  };
+  const api = createApi(ctx, { cwd: root });
+
+  const result = await api.configureMcp('mcp-a', { cwd: '  ' });
+  assert.equal(result.changed, true, '空串清空 cwd 应视为真实变更');
+  assert.equal(result.patch.cwd, null);
+  assert.equal(saved.cwd, undefined, '合并后 cwd 必须被删除');
+});
+
 test('缺少 pluginManager 时降级而不是崩溃', async () => {
   const ctx = fakeCtx({
     entries: [{ id: 'mcp-a', options: { name: MCP_MODULE, config: { serverName: 'a', transport: 'stdio' } }, disabled: false }],

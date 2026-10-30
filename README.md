@@ -119,13 +119,14 @@ dsh plugin --profile <profile> add /absolute/path/to/dsh-skill-mcp-list
 skill_mcp_list(action="list")                             # 全量清单 + 统计
 skill_mcp_list(action="summary")                          # 只要计数
 skill_mcp_list(action="detail", target="archify")         # 单个 Skill 详情
-skill_mcp_list(action="detail", target="mcp-dbx")         # 单个 MCP 详情
+skill_mcp_list(action="detail", target="mcp-dbx")         # 单个 MCP 详情（MCP 也可传 serverName）
 skill_mcp_list(action="disable_skill", target="archify")  # 禁用 Skill
 skill_mcp_list(action="enable_skill",  target="archify")  # 启用 Skill
-skill_mcp_list(action="disable_mcp",   target="mcp-dbx")  # 禁用 MCP
-skill_mcp_list(action="enable_mcp",    target="mcp-dbx")  # 启用 MCP
+skill_mcp_list(action="disable_mcp",   target="mcp-dbx")  # 禁用 MCP（target 可为 entryId 或 serverName）
+skill_mcp_list(action="enable_mcp",    target="mcp-dbx")  # 启用 MCP（target 可为 entryId 或 serverName）
 skill_mcp_list(action="install_skill", spec={ name: "my-skill", description: "做了什么", body: "# 步骤" })            # 安装 Skill
 skill_mcp_list(action="configure_mcp",  target="mcp-dbx", config={ toolCallTimeoutMs: 120000, failOnStartupError: true })  # 配置 MCP
+skill_mcp_list(action="configure_mcp",  target="mcp-dbx", config={ toolCallTimeoutMs: null, cwd: null })  # 传 null（cwd 也可传空串）恢复默认值
 ```
 
 `field` 参数可选择改哪个调用面：`model`（默认，模型侧目录）或 `user`（人类侧命令）。

@@ -159,12 +159,22 @@ test('normalizeMcpPatch 空补丁被拒绝', () => {
 });
 
 test('normalizeMcpPatch 数值字段必须为正整数', () => {
-  for (const bad of [0, -1, 1.5, '120', null, Number.NaN]) {
+  for (const bad of [0, -1, 1.5, '120', Number.NaN]) {
     const out = normalizeMcpPatch({ toolCallTimeoutMs: bad }, { transport: 'stdio', command: 'node' });
     assert.equal(out.ok, false, 'toolCallTimeoutMs=' + String(bad));
   }
   const ok = normalizeMcpPatch({ maxInstructionBytes: 65536 }, { transport: 'stdio', command: 'node' });
   assert.deepEqual(ok.patch, { maxInstructionBytes: 65536 });
+});
+
+test('normalizeMcpPatch 数值字段传 null 清除字段、回落默认值', () => {
+  // 两个数值字段都标了 nullable：null 是"恢复默认值"的显式语义，不再拒绝。
+  const cleared = normalizeMcpPatch(
+    { toolCallTimeoutMs: null, maxInstructionBytes: null },
+    { transport: 'stdio', command: 'node', toolCallTimeoutMs: 30000 },
+  );
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(cleared.patch, { toolCallTimeoutMs: null, maxInstructionBytes: null });
 });
 
 test('normalizeMcpPatch 布尔字段必须是布尔值', () => {
